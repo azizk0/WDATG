@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Play, Square, Plus, X, Clock, BarChart3, List, ChevronDown, Check } from "lucide-react";
+import { Play, Square, Plus, X, Clock, BarChart3, List, ChevronDown, Check, LogOut } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer,
@@ -476,6 +476,17 @@ function Header({ currentUser, users, setCurrentUserId, addingUser, setAddingUse
               <Plus size={13} /> Person
             </button>
           )}
+
+          <button
+            onClick={async () => {
+              await fetch("/api/logout", { method: "POST" });
+              window.location.href = "/login";
+            }}
+            title="Log out"
+            className="flex items-center justify-center h-[30px] w-[30px] rounded-full text-[#96896F] hover:text-[#A13A24] hover:border-[#A13A24] border border-transparent hover:border-solid transition-colors"
+          >
+            <LogOut size={14} />
+          </button>
         </div>
       </div>
     </header>
