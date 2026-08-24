@@ -284,7 +284,27 @@ export default function App() {
   }
 
   function confirmPending() {
-    if (!pending || !currentUser) return;
+    if (!pending) return;
+
+    if (pending.editing) {
+      const updated = entries.map((e) =>
+        e.id === pending.id
+          ? {
+              ...e,
+              description: pending.description.trim() || "Untitled",
+              tagIds: pending.tagIds,
+              start: new Date(pending.start).toISOString(),
+              end: new Date(pending.end).toISOString(),
+            }
+          : e
+      );
+      persistEntries(updated);
+      setPending(null);
+      setTagQuery("");
+      return;
+    }
+
+    if (!currentUser) return;
     const entry = {
       id: uid(),
       userId: currentUser.id,
@@ -315,6 +335,19 @@ export default function App() {
     setPending({ start, end, description: "", tagIds: [], manual: true });
     setShowManual(true);
     setSlotSeq((n) => n + 1);
+  }
+
+  function openEdit(entry) {
+    setManualBatch([]);
+    setPending({
+      id: entry.id,
+      userId: entry.userId,
+      start: new Date(entry.start).getTime(),
+      end: new Date(entry.end).getTime(),
+      description: entry.description,
+      tagIds: entry.tagIds,
+      editing: true,
+    });
   }
 
   function toggleTagOnPending(tagId) {
@@ -397,9 +430,9 @@ export default function App() {
         </div>
 
         {view === "log" ? (
-          <LogView grouped={grouped} users={users} tags={tags} onDelete={deleteEntry} />
+          <LogView grouped={grouped} users={users} tags={tags} onDelete={deleteEntry} onEdit={openEdit} />
         ) : (
-          <Dashboard entries={entries} users={users} tags={tags} />
+          <Dashboard entries={entries} users={users} tags={tags} onEditEntry={openEdit} />
         )}
       </main>
 
@@ -414,8 +447,10 @@ export default function App() {
           onAddTag={addTagFromQuery}
           onConfirm={confirmPending}
           onDiscard={() => { discardPending(); setShowManual(false); }}
-          currentUser={currentUser}
+          onDelete={() => { deleteEntry(pending.id); discardPending(); setShowManual(false); }}
+          currentUser={pending.editing ? users.find((u) => u.id === pending.userId) || currentUser : currentUser}
           manual={pending.manual}
+          editing={pending.editing}
           manualBatch={manualBatch}
           onRemoveBatchEntry={removeBatchEntry}
           slotSeq={slotSeq}
@@ -569,7 +604,7 @@ function TimerCard({ currentUser, running, now, onStart, onStop, onManual }) {
    Pending entry sheet (after stop, or manual)
 --------------------------------------------------------- */
 
-function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onToggleTag, onAddTag, onConfirm, onDiscard, currentUser, manual, manualBatch, onRemoveBatchEntry, slotSeq }) {
+function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onToggleTag, onAddTag, onConfirm, onDiscard, onDelete, currentUser, manual, editing, manualBatch, onRemoveBatchEntry, slotSeq }) {
   const durationMs = pending.end - pending.start;
   const descRef = useRef(null);
 
@@ -605,6 +640,11 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
           <div className="flex items-center gap-2">
             <Avatar name={currentUser?.name} size={22} />
             <span className="text-[13px] text-[#6B6151]">{currentUser?.name}</span>
+            {editing && (
+              <span className="font-stamp text-[10px] uppercase tracking-wider text-[#33587A]/80 border border-[#33587A]/40 rounded-[3px] px-1.5 py-0.5">
+                Editing
+              </span>
+            )}
           </div>
           <button onClick={onDiscard} className="text-[#6B6151] hover:text-[#2A251D]">
             <X size={18} />
@@ -614,7 +654,7 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
         <div className="flex items-center gap-3 mb-4">
           <div className="flex items-center gap-1.5 font-type text-[13px] text-[#6B6151]">
             <Clock size={13} />
-            {manual ? (
+            {manual || editing ? (
               <>
                 <input
                   type="time"
@@ -642,7 +682,7 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
           autoFocus={!manual}
           value={pending.description}
           onChange={(e) => setField("description", e.target.value)}
-          onKeyDown={(e) => { if (manual && e.key === "Enter") { e.preventDefault(); onConfirm(); } }}
+          onKeyDown={(e) => { if ((manual || editing) && e.key === "Enter") { e.preventDefault(); onConfirm(); } }}
           placeholder="What was this? e.g. chat with Shannon about scheduling"
           className="w-full bg-[#E3D8BA] border border-[#B9AB84] rounded-sm px-3 py-2.5 text-[14px] outline-none focus:border-[#A13A24] placeholder:text-[#96896F] mb-4"
         />
@@ -693,15 +733,24 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
             onClick={onDiscard}
             className="flex-1 py-2.5 rounded-sm border border-[#B9AB84] text-[#6B6151] text-[13px] font-medium hover:text-[#2A251D] transition-colors"
           >
-            {manual && manualBatch.length > 0 ? "Done" : "Discard"}
+            {editing ? "Cancel" : manual && manualBatch.length > 0 ? "Done" : "Discard"}
           </button>
           <button
             onClick={onConfirm}
             className="flex-1 py-2.5 rounded-sm bg-[#3C6B45] text-[#F6EFDD] text-[13px] font-semibold hover:brightness-110 transition-all"
           >
-            {manual ? "Save & add another" : "Save entry"}
+            {editing ? "Save changes" : manual ? "Save & add another" : "Save entry"}
           </button>
         </div>
+
+        {editing && (
+          <button
+            onClick={onDelete}
+            className="w-full mt-3 text-[12px] text-[#A13A24]/70 hover:text-[#A13A24] text-center transition-colors"
+          >
+            Delete entry
+          </button>
+        )}
 
         {manual && manualBatch.length > 0 && (
           <div className="mt-5 pt-4 border-t border-dashed border-[#B9AB84]">
@@ -736,7 +785,7 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
    Log view
 --------------------------------------------------------- */
 
-function LogView({ grouped, users, tags, onDelete }) {
+function LogView({ grouped, users, tags, onDelete, onEdit }) {
   if (grouped.length === 0) {
     return (
       <div className="text-center py-16 text-[#96896F]">
@@ -763,7 +812,8 @@ function LogView({ grouped, users, tags, onDelete }) {
                 return (
                   <div
                     key={e.id}
-                    className="group flex items-center gap-3 border border-[#B9AB84]/60 bg-[#F6EFDD] px-3.5 py-2.5 hover:border-[#A13A24]/50 transition-colors"
+                    onClick={() => onEdit(e)}
+                    className="group flex items-center gap-3 border border-[#B9AB84]/60 bg-[#F6EFDD] px-3.5 py-2.5 hover:border-[#A13A24]/50 transition-colors cursor-pointer"
                   >
                     <span className="font-type text-[10px] text-[#96896F] w-5 shrink-0 text-right">{String(day.items.length - i).padStart(2, "0")}</span>
                     <Avatar name={user?.name} />
@@ -786,7 +836,7 @@ function LogView({ grouped, users, tags, onDelete }) {
                     </div>
                     <div className="text-[12px] font-type text-[#6B6151] shrink-0">{fmtDuration(dur)}</div>
                     <button
-                      onClick={() => onDelete(e.id)}
+                      onClick={(ev) => { ev.stopPropagation(); onDelete(e.id); }}
                       className="opacity-0 group-hover:opacity-100 text-[#96896F] hover:text-[#A13A24] transition-opacity shrink-0"
                     >
                       <X size={14} />
@@ -806,7 +856,7 @@ function LogView({ grouped, users, tags, onDelete }) {
    Dashboard
 --------------------------------------------------------- */
 
-function Dashboard({ entries, users, tags }) {
+function Dashboard({ entries, users, tags, onEditEntry }) {
   const [personFilter, setPersonFilter] = useState("all");
   const [range, setRange] = useState(7); // days
   const [selectedTag, setSelectedTag] = useState(null); // tag name or null
@@ -920,6 +970,7 @@ function Dashboard({ entries, users, tags }) {
           entries={filtered.filter((e) => (selected.name === "Untagged" ? e.tagIds.length === 0 : e.tagIds.some((id) => tags.find((t) => t.id === id)?.name === selected.name)))}
           users={users}
           onBack={() => setSelectedTag(null)}
+          onEdit={onEditEntry}
         />
       ) : (
         <>
@@ -1057,7 +1108,7 @@ function computeInsights({ byTag, byPerson, byDay, filtered, totalHours, avgEntr
    Tag drill-down
 --------------------------------------------------------- */
 
-function TagDetail({ tag, entries, users, onBack }) {
+function TagDetail({ tag, entries, users, onBack, onEdit }) {
   const byDay = useMemo(() => {
     const map = new Map();
     for (const e of entries) {
@@ -1138,7 +1189,11 @@ function TagDetail({ tag, entries, users, onBack }) {
           const user = users.find((u) => u.id === e.userId);
           const dur = new Date(e.end) - new Date(e.start);
           return (
-            <div key={e.id} className="flex items-center gap-3 border border-[#B9AB84]/60 bg-[#F6EFDD] px-3.5 py-2.5">
+            <div
+              key={e.id}
+              onClick={() => onEdit(e)}
+              className="flex items-center gap-3 border border-[#B9AB84]/60 bg-[#F6EFDD] px-3.5 py-2.5 hover:border-[#A13A24]/50 transition-colors cursor-pointer"
+            >
               <Avatar name={user?.name} />
               <div className="min-w-0 flex-1">
                 <div className="text-[14px] truncate">{e.description}</div>
