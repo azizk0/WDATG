@@ -184,6 +184,8 @@ export default function App() {
 
   // pending entry (after stop, or manual add)
   const [pending, setPending] = useState(null); // { start, end, description, tagIds }
+  const [manualBatch, setManualBatch] = useState([]); // entries saved so far in this manual session
+  const [slotSeq, setSlotSeq] = useState(0); // bumped whenever a fresh empty slot opens, to refocus
 
   const [newUserName, setNewUserName] = useState("");
   const [addingUser, setAddingUser] = useState(false);
@@ -273,6 +275,12 @@ export default function App() {
   function discardPending() {
     setPending(null);
     setTagQuery("");
+    setManualBatch([]);
+  }
+
+  function removeBatchEntry(id) {
+    deleteEntry(id);
+    setManualBatch((b) => b.filter((e) => e.id !== id));
   }
 
   function confirmPending() {
@@ -286,15 +294,27 @@ export default function App() {
       end: new Date(pending.end).toISOString(),
     };
     persistEntries([entry, ...entries]);
-    setPending(null);
     setTagQuery("");
+
+    if (pending.manual) {
+      // chain straight into a fresh slot, picked up right where this one left off
+      setManualBatch((b) => [entry, ...b]);
+      const nextStart = pending.end;
+      const nextEnd = nextStart + 15 * 60 * 1000;
+      setPending({ start: nextStart, end: nextEnd, description: "", tagIds: [], manual: true });
+      setSlotSeq((n) => n + 1);
+    } else {
+      setPending(null);
+    }
   }
 
   function openManual() {
     const end = Date.now();
     const start = end - 15 * 60 * 1000;
+    setManualBatch([]);
     setPending({ start, end, description: "", tagIds: [], manual: true });
     setShowManual(true);
+    setSlotSeq((n) => n + 1);
   }
 
   function toggleTagOnPending(tagId) {
@@ -396,6 +416,9 @@ export default function App() {
           onDiscard={() => { discardPending(); setShowManual(false); }}
           currentUser={currentUser}
           manual={pending.manual}
+          manualBatch={manualBatch}
+          onRemoveBatchEntry={removeBatchEntry}
+          slotSeq={slotSeq}
         />
       )}
     </div>
@@ -535,8 +558,13 @@ function TimerCard({ currentUser, running, now, onStart, onStop, onManual }) {
    Pending entry sheet (after stop, or manual)
 --------------------------------------------------------- */
 
-function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onToggleTag, onAddTag, onConfirm, onDiscard, currentUser, manual }) {
+function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onToggleTag, onAddTag, onConfirm, onDiscard, currentUser, manual, manualBatch, onRemoveBatchEntry, slotSeq }) {
   const durationMs = pending.end - pending.start;
+  const descRef = useRef(null);
+
+  useEffect(() => {
+    if (manual) descRef.current?.focus();
+  }, [slotSeq]);
 
   function setField(field, value) {
     setPending((p) => ({ ...p, [field]: value }));
@@ -599,9 +627,11 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
         </div>
 
         <input
+          ref={descRef}
           autoFocus={!manual}
           value={pending.description}
           onChange={(e) => setField("description", e.target.value)}
+          onKeyDown={(e) => { if (manual && e.key === "Enter") { e.preventDefault(); onConfirm(); } }}
           placeholder="What was this? e.g. chat with Shannon about scheduling"
           className="w-full bg-[#E3D8BA] border border-[#B9AB84] rounded-sm px-3 py-2.5 text-[14px] outline-none focus:border-[#A13A24] placeholder:text-[#96896F] mb-4"
         />
@@ -652,15 +682,39 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
             onClick={onDiscard}
             className="flex-1 py-2.5 rounded-sm border border-[#B9AB84] text-[#6B6151] text-[13px] font-medium hover:text-[#2A251D] transition-colors"
           >
-            Discard
+            {manual && manualBatch.length > 0 ? "Done" : "Discard"}
           </button>
           <button
             onClick={onConfirm}
             className="flex-1 py-2.5 rounded-sm bg-[#3C6B45] text-[#F6EFDD] text-[13px] font-semibold hover:brightness-110 transition-all"
           >
-            Save entry
+            {manual ? "Save & add another" : "Save entry"}
           </button>
         </div>
+
+        {manual && manualBatch.length > 0 && (
+          <div className="mt-5 pt-4 border-t border-dashed border-[#B9AB84]">
+            <div className="mb-2 text-[11px] font-stamp uppercase tracking-wider text-[#6B6151]">
+              Added this session · {manualBatch.length}
+            </div>
+            <div className="space-y-1.5 max-h-32 overflow-y-auto">
+              {manualBatch.map((e) => (
+                <div key={e.id} className="group flex items-center gap-2 border border-[#B9AB84]/50 bg-[#ECE3CD]/60 px-2.5 py-1.5 text-[12px]">
+                  <span className="font-type text-[10px] text-[#96896F] shrink-0">
+                    {fmtTimeShort(e.start)}–{fmtTimeShort(e.end)}
+                  </span>
+                  <span className="flex-1 truncate">{e.description}</span>
+                  <button
+                    onClick={() => onRemoveBatchEntry(e.id)}
+                    className="opacity-0 group-hover:opacity-100 text-[#96896F] hover:text-[#A13A24] transition-opacity shrink-0"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         </div>
       </div>
     </div>
