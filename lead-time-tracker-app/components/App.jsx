@@ -121,7 +121,7 @@ async function saveKey(key, value) {
    Small UI primitives
 --------------------------------------------------------- */
 
-function Pill({ active, onClick, children, color, onRemove, stamp }) {
+function Pill({ active, onClick, children, color, onRemove, stamp, checkable }) {
   const c = color || "#A13A24";
   const rot = stamp ? tagRotation(String(children)) : 0;
   return (
@@ -137,8 +137,14 @@ function Pill({ active, onClick, children, color, onRemove, stamp }) {
         stamp ? "rounded-[3px] font-stamp uppercase tracking-wide text-[11px] border-[1.5px]" : "rounded-full"
       }`}
     >
-      {color && (
-        <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: c }} />
+      {checkable ? (
+        active ? (
+          <Check size={12} className="shrink-0" style={{ color: c }} />
+        ) : (
+          <span className="h-2.5 w-2.5 rounded-[3px] border border-current opacity-40 shrink-0" />
+        )
+      ) : (
+        color && <span className="h-1.5 w-1.5 rounded-full shrink-0" style={{ background: c }} />
       )}
       {children}
       {onRemove && (
@@ -177,6 +183,16 @@ export default function App() {
 
   const [currentUserId, setCurrentUserId] = useState(null);
   const [view, setView] = useState("log"); // log | dashboard
+  const [logFilterIds, setLogFilterIds] = useState([]); // which people's entries show in the Log tab
+
+  // switching the active person resets the Log tab back to just their entries
+  useEffect(() => {
+    if (currentUserId) setLogFilterIds([currentUserId]);
+  }, [currentUserId]);
+
+  function toggleLogFilter(userId) {
+    setLogFilterIds((ids) => (ids.includes(userId) ? ids.filter((id) => id !== userId) : [...ids, userId]));
+  }
 
   // timer state
   const [running, setRunning] = useState(null); // { startedAt } or null
@@ -373,8 +389,9 @@ export default function App() {
   }
 
   const grouped = useMemo(() => {
+    const visible = entries.filter((e) => logFilterIds.includes(e.userId));
     const map = new Map();
-    for (const e of entries) {
+    for (const e of visible) {
       const k = dayKey(e.start);
       if (!map.has(k)) map.set(k, []);
       map.get(k).push(e);
@@ -385,7 +402,7 @@ export default function App() {
       label: dayLabel(k),
       items: map.get(k).sort((a, b) => new Date(b.start) - new Date(a.start)),
     }));
-  }, [entries]);
+  }, [entries, logFilterIds]);
 
   if (!loaded) {
     return (
@@ -430,7 +447,24 @@ export default function App() {
         </div>
 
         {view === "log" ? (
-          <LogView grouped={grouped} users={users} tags={tags} onDelete={deleteEntry} onEdit={openEdit} />
+          <>
+            {users.length > 1 && (
+              <div className="flex items-center gap-1.5 flex-wrap mb-4">
+                {users.map((u) => (
+                  <Pill
+                    key={u.id}
+                    checkable
+                    active={logFilterIds.includes(u.id)}
+                    onClick={() => toggleLogFilter(u.id)}
+                    color={tagColor(u.name)}
+                  >
+                    {u.name}
+                  </Pill>
+                ))}
+              </div>
+            )}
+            <LogView grouped={grouped} users={users} tags={tags} onDelete={deleteEntry} onEdit={openEdit} hasAnyEntries={entries.length > 0} />
+          </>
         ) : (
           <Dashboard entries={entries} users={users} tags={tags} onEditEntry={openEdit} />
         )}
@@ -785,12 +819,14 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
    Log view
 --------------------------------------------------------- */
 
-function LogView({ grouped, users, tags, onDelete, onEdit }) {
+function LogView({ grouped, users, tags, onDelete, onEdit, hasAnyEntries }) {
   if (grouped.length === 0) {
     return (
       <div className="text-center py-16 text-[#96896F]">
         <Clock size={28} className="mx-auto mb-3 opacity-40" />
-        <div className="text-[14px]">No entries yet. Press start above, or log one manually.</div>
+        <div className="text-[14px]">
+          {hasAnyEntries ? "No entries for the people ticked above." : "No entries yet. Press start above, or log one manually."}
+        </div>
       </div>
     );
   }
