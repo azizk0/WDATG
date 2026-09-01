@@ -662,6 +662,27 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
     setField(field, base.getTime());
   }
 
+  function dateInputValue(ms) {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  function shiftDate(value) {
+    const [y, m, d] = value.split("-").map(Number);
+    const oldStart = new Date(pending.start);
+    const oldMidnight = new Date(oldStart.getFullYear(), oldStart.getMonth(), oldStart.getDate()).getTime();
+    const newMidnight = new Date(y, m - 1, d).getTime();
+    const delta = newMidnight - oldMidnight;
+    if (!delta) return;
+    setPending((p) => ({ ...p, start: p.start + delta, end: p.end + delta }));
+  }
+
+  function jumpToDay(offsetDays) {
+    const now = new Date();
+    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays);
+    shiftDate(`${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`);
+  }
+
   const filteredTags = tags.filter((t) => t.name.toLowerCase().includes(tagQuery.toLowerCase()));
   const exactExists = tags.some((t) => t.name.toLowerCase() === tagQuery.trim().toLowerCase());
 
@@ -684,6 +705,32 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
             <X size={18} />
           </button>
         </div>
+
+        {(manual || editing) && (
+          <div className="flex items-center gap-1.5 mb-3 flex-wrap">
+            <input
+              type="date"
+              value={dateInputValue(pending.start)}
+              onChange={(e) => shiftDate(e.target.value)}
+              className="bg-[#E3D8BA] border border-[#B9AB84] rounded-sm px-2 py-1.5 text-[13px] font-type text-[#2A251D] outline-none focus:border-[#A13A24]"
+            />
+            <span className="text-[11px] text-[#96896F]">{dayLabel(dateInputValue(pending.start))}</span>
+            <button
+              type="button"
+              onClick={() => jumpToDay(0)}
+              className="text-[11px] px-2 py-1 rounded-sm border border-[#B9AB84] text-[#6B6151] hover:text-[#2A251D] hover:border-[#A13A24] transition-colors"
+            >
+              Today
+            </button>
+            <button
+              type="button"
+              onClick={() => jumpToDay(-1)}
+              className="text-[11px] px-2 py-1 rounded-sm border border-[#B9AB84] text-[#6B6151] hover:text-[#2A251D] hover:border-[#A13A24] transition-colors"
+            >
+              Yesterday
+            </button>
+          </div>
+        )}
 
         <div className="flex items-center gap-3 mb-4">
           <div className="flex items-center gap-1.5 font-type text-[13px] text-[#6B6151]">
