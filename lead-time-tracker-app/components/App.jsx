@@ -85,6 +85,18 @@ function dayLabel(key) {
   return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 }
 
+const WEEKLY_TARGET_HOURS = 40;
+
+function getWeekRange(d = new Date()) {
+  const diffToMonday = (d.getDay() + 6) % 7; // days since most recent Monday
+  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - diffToMonday).getTime();
+  return [start, start + 7 * 24 * 60 * 60 * 1000];
+}
+
+function isLunchEntry(e, tags) {
+  return e.tagIds.some((id) => (tags.find((t) => t.id === id)?.name || "").trim().toLowerCase() === "lunch");
+}
+
 /* ---------------------------------------------------------
    Storage helpers — shared, no auth. Talks to /api/kv/[key],
    which is backed by a real Postgres database (see pages/api/kv/[key].js).
@@ -184,6 +196,7 @@ export default function App() {
   const [currentUserId, setCurrentUserId] = useState(null);
   const [view, setView] = useState("log"); // log | dashboard
   const [logFilterIds, setLogFilterIds] = useState([]); // which people's entries show in the Log tab
+  const [confirmRemoveUserId, setConfirmRemoveUserId] = useState(null);
 
   // switching the active person resets the Log tab back to just their entries
   useEffect(() => {
@@ -262,6 +275,12 @@ export default function App() {
     setCurrentUserId(u.id);
     setNewUserName("");
     setAddingUser(false);
+  }
+
+  function removeUser(id) {
+    const next = users.filter((x) => x.id !== id);
+    persistUsers(next);
+    if (currentUserId === id) setCurrentUserId(next.length ? next[0].id : null);
   }
 
   function ensureTag(name) {
@@ -429,6 +448,7 @@ export default function App() {
         newUserName={newUserName}
         setNewUserName={setNewUserName}
         addUser={addUser}
+        removeUser={setConfirmRemoveUserId}
       />
 
       <main className="max-w-3xl mx-auto px-4 pb-28">
@@ -490,6 +510,33 @@ export default function App() {
           slotSeq={slotSeq}
         />
       )}
+
+      {confirmRemoveUserId && (() => {
+        const u = users.find((x) => x.id === confirmRemoveUserId);
+        if (!u) return null;
+        return (
+          <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#2A251D]/50 backdrop-blur-[2px] px-4">
+            <div className="w-full max-w-xs bg-[#F6EFDD] border border-[#B9AB84] rounded-sm p-5">
+              <div className="text-[14px] text-[#2A251D] mb-1">Remove <span className="font-semibold">{u.name}</span>?</div>
+              <div className="text-[12px] text-[#6B6151] mb-4">Their logged entries stay in the log, just no longer tied to a person you can pick.</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setConfirmRemoveUserId(null)}
+                  className="flex-1 py-2 rounded-sm border border-[#B9AB84] text-[#6B6151] text-[13px] font-medium hover:text-[#2A251D] transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => { removeUser(u.id); setConfirmRemoveUserId(null); }}
+                  className="flex-1 py-2 rounded-sm bg-[#A13A24] text-[#F6EFDD] text-[13px] font-semibold hover:brightness-110 transition-all"
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -498,7 +545,7 @@ export default function App() {
    Header — user picker
 --------------------------------------------------------- */
 
-function Header({ currentUser, users, setCurrentUserId, addingUser, setAddingUser, newUserName, setNewUserName, addUser }) {
+function Header({ currentUser, users, setCurrentUserId, addingUser, setAddingUser, newUserName, setNewUserName, addUser, removeUser }) {
   return (
     <header className="max-w-3xl mx-auto px-4 pt-8 pb-2">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -515,7 +562,13 @@ function Header({ currentUser, users, setCurrentUserId, addingUser, setAddingUse
 
         <div className="flex items-center gap-2 flex-wrap">
           {users.map((u) => (
-            <Pill key={u.id} active={currentUser?.id === u.id} onClick={() => setCurrentUserId(u.id)} color={tagColor(u.name)}>
+            <Pill
+              key={u.id}
+              active={currentUser?.id === u.id}
+              onClick={() => setCurrentUserId(u.id)}
+              color={tagColor(u.name)}
+              onRemove={() => removeUser(u.id)}
+            >
               {u.name}
             </Pill>
           ))}
@@ -1006,7 +1059,32 @@ function Dashboard({ entries, users, tags, onEditEntry }) {
   const totalHours = byTag.reduce((s, t) => s + t.hours, 0);
   const avgEntryMins = filtered.length ? Math.round(filtered.reduce((s, e) => s + (new Date(e.end) - new Date(e.start)), 0) / filtered.length / 60000) : 0;
 
-  const insights = useMemo(() => computeInsights({ byTag, byPerson, byDay, filtered, totalHours, avgEntryMins }), [byTag, byPerson, byDay, filtered, totalHours, avgEntryMins]);
+  const insights = useMemo(() => computeInsights({ byTag, byDay, filtered, totalHours, avgEntryMins }), [byTag, byDay, filtered, totalHours, avgEntryMins]);
+
+  // this-calendar-week worked hours per person, excluding lunch — independent of the 7/14/30d range above
+  const weeklyByUser = useMemo(() => {
+    const [weekStart, weekEnd] = getWeekRange();
+    const map = new Map();
+    for (const e of entries) {
+      const t = new Date(e.start).getTime();
+      if (t < weekStart || t >= weekEnd) continue;
+      if (isLunchEntry(e, tags)) continue;
+      const dur = new Date(e.end) - new Date(e.start);
+      map.set(e.userId, (map.get(e.userId) || 0) + dur);
+    }
+    return map;
+  }, [entries, tags]);
+
+  const perPerson = useMemo(() => {
+    if (personFilter !== "all") return [];
+    return users
+      .map((u) => {
+        const userEntries = filtered.filter((e) => e.userId === u.id);
+        const ms = userEntries.reduce((s, e) => s + (new Date(e.end) - new Date(e.start)), 0);
+        return { id: u.id, name: u.name, hours: +(ms / 3600000).toFixed(1), count: userEntries.length };
+      })
+      .filter((p) => p.count > 0);
+  }, [personFilter, filtered, users]);
 
   if (entries.length === 0) {
     return (
@@ -1063,6 +1141,32 @@ function Dashboard({ entries, users, tags, onEditEntry }) {
             <Stat label="Avg entry" value={`${avgEntryMins}m`} />
             <Stat label="Tags used" value={byTag.length} />
           </div>
+
+          {personFilter !== "all" && (
+            <div className="mb-6 border border-[#B9AB84] bg-[#F6EFDD] p-4">
+              <div className="text-[11px] font-stamp uppercase tracking-wider text-[#6B6151] mb-2">This week</div>
+              <WeeklyGoal hours={(weeklyByUser.get(personFilter) || 0) / 3600000} />
+            </div>
+          )}
+
+          {personFilter === "all" && perPerson.length > 0 && (
+            <div className="mb-8">
+              <div className="mb-2 text-[11px] font-stamp uppercase tracking-wider text-[#6B6151]">Each person, on their own</div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {perPerson.map((p) => (
+                  <div key={p.id} className="border border-[#B9AB84] bg-[#F6EFDD] p-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Avatar name={p.name} size={22} />
+                      <span className="text-[14px] font-semibold flex-1 truncate">{p.name}</span>
+                      <span className="font-type text-[15px] font-bold shrink-0">{p.hours}h</span>
+                    </div>
+                    <div className="text-[11px] text-[#96896F] mb-3">{p.count} {p.count === 1 ? "entry" : "entries"} in this range</div>
+                    <WeeklyGoal hours={(weeklyByUser.get(p.id) || 0) / 3600000} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {insights.length > 0 && (
             <div className="mb-8 border border-[#B9AB84] bg-[#F6EFDD] border-l-4 border-l-[#A13A24] p-4">
@@ -1142,7 +1246,7 @@ function Dashboard({ entries, users, tags, onEditEntry }) {
    Insight heuristics — plain, explainable, no black box
 --------------------------------------------------------- */
 
-function computeInsights({ byTag, byPerson, byDay, filtered, totalHours, avgEntryMins }) {
+function computeInsights({ byTag, byDay, filtered, totalHours, avgEntryMins }) {
   const out = [];
   if (byTag.length === 0) return out;
 
@@ -1167,15 +1271,6 @@ function computeInsights({ byTag, byPerson, byDay, filtered, totalHours, avgEntr
   if (untagged && totalHours) {
     const pct = Math.round((untagged.hours / totalHours) * 100);
     if (pct >= 15) out.push(`${pct}% of logged time has no tag yet — tagging it would sharpen the picture above.`);
-  }
-
-  // workload imbalance across people
-  if (byPerson.length >= 2) {
-    const sorted = [...byPerson].sort((a, b) => b.hours - a.hours);
-    const [hi, lo] = [sorted[0], sorted[sorted.length - 1]];
-    if (hi.hours > 0 && hi.hours >= lo.hours * 1.6 && hi.hours - lo.hours >= 1) {
-      out.push(`${hi.name} logged ${hi.hours}h vs ${lo.name}'s ${lo.hours}h in this window — worth a look if that split feels off.`);
-    }
   }
 
   // busiest day
@@ -1296,6 +1391,22 @@ function Stat({ label, value }) {
     <div className="border border-[#B9AB84] bg-[#F6EFDD] px-4 py-3 shadow-[2px_2px_0_rgba(42,37,29,0.05)]">
       <div className="font-type text-[20px] font-bold text-[#2A251D]">{value}</div>
       <div className="text-[11px] text-[#6B6151] mt-0.5">{label}</div>
+    </div>
+  );
+}
+
+function WeeklyGoal({ hours }) {
+  const pct = Math.min(100, (hours / WEEKLY_TARGET_HOURS) * 100);
+  const remaining = WEEKLY_TARGET_HOURS - hours;
+  const over = remaining <= 0;
+  return (
+    <div>
+      <div className="h-1.5 rounded-full bg-[#E3D8BA] overflow-hidden mb-1">
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: over ? "#3C6B45" : "#A13A24" }} />
+      </div>
+      <div className="text-[11px] text-[#6B6151]">
+        {over ? `${Math.abs(remaining).toFixed(1)}h over the ${WEEKLY_TARGET_HOURS}h week` : `${remaining.toFixed(1)}h left of ${WEEKLY_TARGET_HOURS}h this week`}
+      </div>
     </div>
   );
 }
