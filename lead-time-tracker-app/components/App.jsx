@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Play, Square, Plus, X, Clock, BarChart3, List, ChevronDown, Check, LogOut } from "lucide-react";
+import { Play, Square, Plus, X, Clock, BarChart3, List, ChevronDown, Check, LogOut, Download } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer,
@@ -93,8 +93,13 @@ function getWeekRange(d = new Date()) {
   return [start, start + 7 * 24 * 60 * 60 * 1000];
 }
 
-function isLunchEntry(e, tags) {
-  return e.tagIds.some((id) => (tags.find((t) => t.id === id)?.name || "").trim().toLowerCase() === "lunch");
+const NON_WORK_TAG_KEYWORDS = ["lunch", "break", "out of office", "ooo", "pto", "vacation", "sick", "time off", "holiday"];
+
+function isNonWorkEntry(e, tags) {
+  return e.tagIds.some((id) => {
+    const name = (tags.find((t) => t.id === id)?.name || "").trim().toLowerCase();
+    return name && NON_WORK_TAG_KEYWORDS.some((kw) => name.includes(kw));
+  });
 }
 
 /* ---------------------------------------------------------
@@ -1068,7 +1073,7 @@ function Dashboard({ entries, users, tags, onEditEntry }) {
     for (const e of entries) {
       const t = new Date(e.start).getTime();
       if (t < weekStart || t >= weekEnd) continue;
-      if (isLunchEntry(e, tags)) continue;
+      if (isNonWorkEntry(e, tags)) continue;
       const dur = new Date(e.end) - new Date(e.start);
       map.set(e.userId, (map.get(e.userId) || 0) + dur);
     }
@@ -1121,6 +1126,20 @@ function Dashboard({ entries, users, tags, onEditEntry }) {
             </Pill>
           ))}
         </div>
+
+        <button
+          onClick={() => {
+            const scopeUser = personFilter !== "all" ? users.find((u) => u.id === personFilter) : null;
+            const md = buildExportMarkdown({ filtered, users, tags, personFilter, range });
+            const stamp = new Date().toISOString().slice(0, 10);
+            const scopeSlug = (scopeUser ? scopeUser.name : "everyone").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+            downloadTextFile(`time-log-${scopeSlug}-${range}d-${stamp}.md`, md, "text/markdown");
+          }}
+          disabled={filtered.length === 0}
+          className="ml-auto flex items-center gap-1.5 rounded-full border border-[#B9AB84] text-[#6B6151] px-3 py-1.5 text-[12px] font-medium hover:text-[#2A251D] hover:border-[#A13A24] disabled:opacity-30 transition-colors"
+        >
+          <Download size={13} /> Export for AI review
+        </button>
       </div>
 
       {filtered.length === 0 ? (
@@ -1280,6 +1299,127 @@ function computeInsights({ byTag, byDay, filtered, totalHours, avgEntryMins }) {
   }
 
   return out.slice(0, 4);
+}
+
+/* ---------------------------------------------------------
+   Markdown export — a self-contained doc meant to be pasted
+   into an AI chat for a time-use assessment
+--------------------------------------------------------- */
+
+function downloadTextFile(filename, content, mime) {
+  const blob = new Blob([content], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function buildExportMarkdown({ filtered, users, tags, personFilter, range }) {
+  const now = new Date();
+  const rangeStart = new Date(Date.now() - range * 24 * 60 * 60 * 1000);
+  const scopeUser = personFilter !== "all" ? users.find((u) => u.id === personFilter) : null;
+  const scopeLabel = scopeUser ? scopeUser.name : "everyone";
+
+  const lines = [];
+  lines.push(`# Time log — ${scopeLabel} — last ${range} days`);
+  lines.push("");
+  lines.push(`Generated ${now.toLocaleString()}. Covers ${rangeStart.toLocaleDateString()} to ${now.toLocaleDateString()}.`);
+  lines.push("");
+  lines.push("## For the AI reviewing this");
+  lines.push("");
+  lines.push("This is a personal work time log exported for review. Please help assess:");
+  lines.push("- Where the time is actually going, and whether that matches what should be a priority");
+  lines.push("- Any patterns of fragmentation or frequent interruption");
+  lines.push("- Categories that could be consolidated, reduced, delegated, or cut");
+  lines.push("- Whether the workload looks sustainable and reasonably balanced across days");
+  lines.push("- Concrete, specific suggestions for using the time better");
+  lines.push("");
+  lines.push("Entries tagged lunch, break, out-of-office, PTO, vacation, sick, or similar are excluded from the work-hour totals and category breakdowns below, since that's personal time, not work — they're still listed in the daily log for context, marked as excluded.");
+  lines.push("");
+
+  const people = scopeUser ? [scopeUser] : users.filter((u) => filtered.some((e) => e.userId === u.id));
+
+  if (people.length === 0) {
+    lines.push("_No entries in this range._");
+    return lines.join("\n");
+  }
+
+  for (const person of people) {
+    const personEntries = filtered.filter((e) => e.userId === person.id).sort((a, b) => new Date(a.start) - new Date(b.start));
+    const workEntries = personEntries.filter((e) => !isNonWorkEntry(e, tags));
+
+    lines.push(`## ${person.name}`);
+    lines.push("");
+
+    const workMs = workEntries.reduce((s, e) => s + (new Date(e.end) - new Date(e.start)), 0);
+    const dayMap = new Map();
+    for (const e of workEntries) {
+      const k = dayKey(e.start);
+      dayMap.set(k, (dayMap.get(k) || 0) + (new Date(e.end) - new Date(e.start)));
+    }
+    const busiest = [...dayMap.entries()].sort((a, b) => b[1] - a[1])[0];
+    const avgMins = workEntries.length ? Math.round(workMs / workEntries.length / 60000) : 0;
+
+    lines.push("### Summary");
+    lines.push("");
+    lines.push(`- Work hours logged: ${(workMs / 3600000).toFixed(1)}h across ${dayMap.size} day(s)`);
+    lines.push(`- Entries: ${personEntries.length} total (${workEntries.length} work, ${personEntries.length - workEntries.length} personal/break)`);
+    lines.push(`- Average work entry length: ${avgMins}m`);
+    if (busiest) lines.push(`- Busiest day: ${dayLabel(busiest[0])} (${(busiest[1] / 3600000).toFixed(1)}h)`);
+    lines.push("");
+
+    const tagMap = new Map();
+    for (const e of workEntries) {
+      const dur = new Date(e.end) - new Date(e.start);
+      const tagIds = e.tagIds.length ? e.tagIds : ["__untagged"];
+      const share = dur / tagIds.length;
+      for (const id of tagIds) {
+        const name = id === "__untagged" ? "Untagged" : (tags.find((t) => t.id === id)?.name || "Untagged");
+        const rec = tagMap.get(name) || { ms: 0, count: 0 };
+        rec.ms += share;
+        rec.count += 1;
+        tagMap.set(name, rec);
+      }
+    }
+    const tagRows = [...tagMap.entries()]
+      .map(([name, rec]) => ({ name, hours: rec.ms / 3600000, count: rec.count }))
+      .sort((a, b) => b.hours - a.hours);
+
+    if (tagRows.length) {
+      lines.push("### Time by category (work only)");
+      lines.push("");
+      lines.push("| Category | Hours | Entries |");
+      lines.push("|---|---|---|");
+      for (const t of tagRows) lines.push(`| ${t.name} | ${t.hours.toFixed(2)}h | ${t.count} |`);
+      lines.push("");
+    }
+
+    lines.push("### Daily log");
+    lines.push("");
+    const grouped = new Map();
+    for (const e of personEntries) {
+      const k = dayKey(e.start);
+      if (!grouped.has(k)) grouped.set(k, []);
+      grouped.get(k).push(e);
+    }
+    for (const k of [...grouped.keys()].sort()) {
+      lines.push(`**${dayLabel(k)} (${k})**`);
+      lines.push("");
+      for (const e of grouped.get(k)) {
+        const tagNames = e.tagIds.map((id) => tags.find((t) => t.id === id)?.name).filter(Boolean);
+        const tagStr = tagNames.length ? ` — ${tagNames.map((n) => `#${n}`).join(" ")}` : "";
+        const excludedNote = isNonWorkEntry(e, tags) ? " _(excluded from totals)_" : "";
+        lines.push(`- ${fmtTimeShort(e.start)}–${fmtTimeShort(e.end)} · ${e.description}${tagStr}${excludedNote}`);
+      }
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n");
 }
 
 /* ---------------------------------------------------------
