@@ -93,6 +93,15 @@ function getWeekRange(d = new Date()) {
   return [start, start + 7 * 24 * 60 * 60 * 1000];
 }
 
+function weekRangeLabel(startMs) {
+  const start = new Date(startMs);
+  const end = new Date(startMs + 6 * 24 * 60 * 60 * 1000);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const startStr = start.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const endStr = end.toLocaleDateString(undefined, sameMonth ? { day: "numeric" } : { month: "short", day: "numeric" });
+  return `${startStr}–${endStr}`;
+}
+
 const NON_WORK_TAG_KEYWORDS = ["lunch", "break", "out of office", "ooo", "pto", "vacation", "sick", "time off", "holiday"];
 
 function isNonWorkEntry(e, tags) {
@@ -414,18 +423,42 @@ export default function App() {
 
   const grouped = useMemo(() => {
     const visible = entries.filter((e) => logFilterIds.includes(e.userId));
-    const map = new Map();
-    for (const e of visible) {
-      const k = dayKey(e.start);
-      if (!map.has(k)) map.set(k, []);
-      map.get(k).push(e);
+    const [weekStart] = getWeekRange();
+
+    function groupByDay(list) {
+      const map = new Map();
+      for (const e of list) {
+        const k = dayKey(e.start);
+        if (!map.has(k)) map.set(k, []);
+        map.get(k).push(e);
+      }
+      return Array.from(map.keys())
+        .sort((a, b) => (a < b ? 1 : -1))
+        .map((k) => ({
+          key: k,
+          label: dayLabel(k),
+          items: map.get(k).sort((a, b) => new Date(b.start) - new Date(a.start)),
+        }));
     }
-    const keys = Array.from(map.keys()).sort((a, b) => (a < b ? 1 : -1));
-    return keys.map((k) => ({
-      key: k,
-      label: dayLabel(k),
-      items: map.get(k).sort((a, b) => new Date(b.start) - new Date(a.start)),
-    }));
+
+    const currentEntries = visible.filter((e) => new Date(e.start).getTime() >= weekStart);
+    const pastEntries = visible.filter((e) => new Date(e.start).getTime() < weekStart);
+
+    const weekMap = new Map(); // weekStartMs -> entries[]
+    for (const e of pastEntries) {
+      const [ws] = getWeekRange(new Date(e.start));
+      if (!weekMap.has(ws)) weekMap.set(ws, []);
+      weekMap.get(ws).push(e);
+    }
+    const pastWeeks = Array.from(weekMap.keys())
+      .sort((a, b) => b - a)
+      .map((ws) => {
+        const list = weekMap.get(ws);
+        const totalMs = list.reduce((s, e) => s + (new Date(e.end) - new Date(e.start)), 0);
+        return { key: String(ws), start: ws, totalMs, days: groupByDay(list) };
+      });
+
+    return { current: groupByDay(currentEntries), pastWeeks };
   }, [entries, logFilterIds]);
 
   if (!loaded) {
@@ -925,7 +958,10 @@ function PendingSheet({ pending, setPending, tags, tagQuery, setTagQuery, onTogg
 --------------------------------------------------------- */
 
 function LogView({ grouped, users, tags, onDelete, onEdit, hasAnyEntries }) {
-  if (grouped.length === 0) {
+  const [expandedWeeks, setExpandedWeeks] = useState(new Set());
+  const { current, pastWeeks } = grouped;
+
+  if (current.length === 0 && pastWeeks.length === 0) {
     return (
       <div className="text-center py-16 text-[#96896F]">
         <Clock size={28} className="mx-auto mb-3 opacity-40" />
@@ -936,59 +972,106 @@ function LogView({ grouped, users, tags, onDelete, onEdit, hasAnyEntries }) {
     );
   }
 
+  function toggleWeek(key) {
+    setExpandedWeeks((s) => {
+      const next = new Set(s);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   return (
     <div className="space-y-7">
-      {grouped.map((day) => {
-        const totalMs = day.items.reduce((s, e) => s + (new Date(e.end) - new Date(e.start)), 0);
-        return (
-          <div key={day.key}>
-            <div className="flex items-baseline justify-between mb-2.5 border-b border-dashed border-[#B9AB84] pb-1.5">
-              <div className="text-[13px] font-stamp uppercase tracking-wide text-[#2A251D]">{day.label}</div>
-              <div className="text-[12px] font-type text-[#96896F]">{fmtDuration(totalMs)} logged</div>
-            </div>
-            <div className="space-y-1.5">
-              {day.items.map((e, i) => {
-                const user = users.find((u) => u.id === e.userId);
-                const dur = new Date(e.end) - new Date(e.start);
-                return (
-                  <div
-                    key={e.id}
-                    onClick={() => onEdit(e)}
-                    className="group flex items-center gap-3 border border-[#B9AB84]/60 bg-[#F6EFDD] px-3.5 py-2.5 hover:border-[#A13A24]/50 transition-colors cursor-pointer"
-                  >
-                    <span className="font-type text-[10px] text-[#96896F] w-5 shrink-0 text-right">{String(day.items.length - i).padStart(2, "0")}</span>
-                    <Avatar name={user?.name} />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[14px] truncate">{e.description}</div>
-                      <div className="flex items-center gap-2 mt-1 flex-wrap">
-                        <span className="font-type text-[11px] text-[#96896F]">
-                          {fmtTimeShort(e.start)}–{fmtTimeShort(e.end)}
-                        </span>
-                        {e.tagIds.map((id) => {
-                          const t = tags.find((tg) => tg.id === id);
-                          if (!t) return null;
-                          return (
-                            <span key={id} style={{ color: tagColor(t.name) }} className="font-stamp text-[10px] uppercase tracking-wide">
-                              #{t.name}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
-                    <div className="text-[12px] font-type text-[#6B6151] shrink-0">{fmtDuration(dur)}</div>
-                    <button
-                      onClick={(ev) => { ev.stopPropagation(); onDelete(e.id); }}
-                      className="opacity-0 group-hover:opacity-100 text-[#96896F] hover:text-[#A13A24] transition-opacity shrink-0"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+      {current.length > 0
+        ? current.map((day) => <DayGroup key={day.key} day={day} users={users} tags={tags} onDelete={onDelete} onEdit={onEdit} />)
+        : pastWeeks.length > 0 && <div className="text-[13px] text-[#96896F]">Nothing logged yet this week.</div>}
+
+      {pastWeeks.length > 0 && (
+        <div>
+          <div className="text-[11px] font-stamp uppercase tracking-wide text-[#96896F] mb-2 border-b border-dashed border-[#B9AB84] pb-1.5">
+            Past weeks
           </div>
-        );
-      })}
+          <div className="space-y-1.5">
+            {pastWeeks.map((week) => {
+              const isOpen = expandedWeeks.has(week.key);
+              return (
+                <div key={week.key} className="border border-[#B9AB84]/60 bg-[#F6EFDD]">
+                  <button
+                    onClick={() => toggleWeek(week.key)}
+                    className="w-full flex items-center justify-between gap-3 px-3.5 py-2.5 text-left hover:border-[#A13A24]/50 transition-colors"
+                  >
+                    <span className="flex items-center gap-2 text-[13px] font-medium">
+                      <ChevronDown size={14} className={`transition-transform shrink-0 ${isOpen ? "" : "-rotate-90"}`} />
+                      Week of {weekRangeLabel(week.start)}
+                    </span>
+                    <span className="font-type text-[12px] text-[#6B6151] shrink-0">{fmtDuration(week.totalMs)} logged</span>
+                  </button>
+                  {isOpen && (
+                    <div className="px-3.5 pb-3.5 pt-1 space-y-5 border-t border-[#B9AB84]/40">
+                      {week.days.map((day) => (
+                        <DayGroup key={day.key} day={day} users={users} tags={tags} onDelete={onDelete} onEdit={onEdit} />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DayGroup({ day, users, tags, onDelete, onEdit }) {
+  const totalMs = day.items.reduce((s, e) => s + (new Date(e.end) - new Date(e.start)), 0);
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-2.5 border-b border-dashed border-[#B9AB84] pb-1.5">
+        <div className="text-[13px] font-stamp uppercase tracking-wide text-[#2A251D]">{day.label}</div>
+        <div className="text-[12px] font-type text-[#96896F]">{fmtDuration(totalMs)} logged</div>
+      </div>
+      <div className="space-y-1.5">
+        {day.items.map((e, i) => {
+          const user = users.find((u) => u.id === e.userId);
+          const dur = new Date(e.end) - new Date(e.start);
+          return (
+            <div
+              key={e.id}
+              onClick={() => onEdit(e)}
+              className="group flex items-center gap-3 border border-[#B9AB84]/60 bg-[#F6EFDD] px-3.5 py-2.5 hover:border-[#A13A24]/50 transition-colors cursor-pointer"
+            >
+              <span className="font-type text-[10px] text-[#96896F] w-5 shrink-0 text-right">{String(day.items.length - i).padStart(2, "0")}</span>
+              <Avatar name={user?.name} />
+              <div className="min-w-0 flex-1">
+                <div className="text-[14px] truncate">{e.description}</div>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span className="font-type text-[11px] text-[#96896F]">
+                    {fmtTimeShort(e.start)}–{fmtTimeShort(e.end)}
+                  </span>
+                  {e.tagIds.map((id) => {
+                    const t = tags.find((tg) => tg.id === id);
+                    if (!t) return null;
+                    return (
+                      <span key={id} style={{ color: tagColor(t.name) }} className="font-stamp text-[10px] uppercase tracking-wide">
+                        #{t.name}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="text-[12px] font-type text-[#6B6151] shrink-0">{fmtDuration(dur)}</div>
+              <button
+                onClick={(ev) => { ev.stopPropagation(); onDelete(e.id); }}
+                className="opacity-0 group-hover:opacity-100 text-[#96896F] hover:text-[#A13A24] transition-opacity shrink-0"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -999,18 +1082,21 @@ function LogView({ grouped, users, tags, onDelete, onEdit, hasAnyEntries }) {
 
 function Dashboard({ entries, users, tags, onEditEntry }) {
   const [personFilter, setPersonFilter] = useState("all");
-  const [range, setRange] = useState(7); // days
+  const [range, setRange] = useState(7); // 7 | 14 | 30 (days) | "week" (calendar week)
   const [selectedTag, setSelectedTag] = useState(null); // tag name or null
 
-  const cutoff = Date.now() - range * 24 * 60 * 60 * 1000;
+  const [weekStart, weekEnd] = getWeekRange();
+  const cutoff = range === "week" ? weekStart : Date.now() - range * 24 * 60 * 60 * 1000;
 
   const filtered = useMemo(() => {
     return entries.filter((e) => {
       if (personFilter !== "all" && e.userId !== personFilter) return false;
-      if (new Date(e.start).getTime() < cutoff) return false;
+      const t = new Date(e.start).getTime();
+      if (t < cutoff) return false;
+      if (range === "week" && t >= weekEnd) return false;
       return true;
     });
-  }, [entries, personFilter, cutoff]);
+  }, [entries, personFilter, cutoff, range, weekEnd]);
 
   // per-tag stats: hours, entry count, avg duration, per-person split
   const byTag = useMemo(() => {
@@ -1106,7 +1192,7 @@ function Dashboard({ entries, users, tags, onEditEntry }) {
     <div>
       <div className="flex items-center gap-4 flex-wrap mb-6">
         <div className="flex items-center gap-1.5">
-          {[7, 14, 30].map((d) => (
+          {["week", 7, 14, 30].map((d) => (
             <button
               key={d}
               onClick={() => setRange(d)}
@@ -1114,7 +1200,7 @@ function Dashboard({ entries, users, tags, onEditEntry }) {
                 range === d ? "border-[#A13A24] text-[#A13A24] bg-[#A13A2415]" : "border-[#B9AB84] text-[#6B6151]"
               }`}
             >
-              {d}d
+              {d === "week" ? "This week" : `${d}d`}
             </button>
           ))}
         </div>
@@ -1133,7 +1219,8 @@ function Dashboard({ entries, users, tags, onEditEntry }) {
             const md = buildExportMarkdown({ filtered, users, tags, personFilter, range });
             const stamp = new Date().toISOString().slice(0, 10);
             const scopeSlug = (scopeUser ? scopeUser.name : "everyone").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-            downloadTextFile(`time-log-${scopeSlug}-${range}d-${stamp}.md`, md, "text/markdown");
+            const rangeSlug = range === "week" ? "this-week" : `${range}d`;
+            downloadTextFile(`time-log-${scopeSlug}-${rangeSlug}-${stamp}.md`, md, "text/markdown");
           }}
           disabled={filtered.length === 0}
           className="ml-auto flex items-center gap-1.5 rounded-full border border-[#B9AB84] text-[#6B6151] px-3 py-1.5 text-[12px] font-medium hover:text-[#2A251D] hover:border-[#A13A24] disabled:opacity-30 transition-colors"
@@ -1320,12 +1407,13 @@ function downloadTextFile(filename, content, mime) {
 
 function buildExportMarkdown({ filtered, users, tags, personFilter, range }) {
   const now = new Date();
-  const rangeStart = new Date(Date.now() - range * 24 * 60 * 60 * 1000);
+  const rangeStart = range === "week" ? new Date(getWeekRange()[0]) : new Date(Date.now() - range * 24 * 60 * 60 * 1000);
+  const rangeLabel = range === "week" ? "this week" : `the last ${range} days`;
   const scopeUser = personFilter !== "all" ? users.find((u) => u.id === personFilter) : null;
   const scopeLabel = scopeUser ? scopeUser.name : "everyone";
 
   const lines = [];
-  lines.push(`# Time log — ${scopeLabel} — last ${range} days`);
+  lines.push(`# Time log — ${scopeLabel} — ${rangeLabel}`);
   lines.push("");
   lines.push(`Generated ${now.toLocaleString()}. Covers ${rangeStart.toLocaleDateString()} to ${now.toLocaleDateString()}.`);
   lines.push("");
